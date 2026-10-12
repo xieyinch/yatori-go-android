@@ -1,0 +1,117 @@
+name: Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build arm64 debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out Android app
+        uses: actions/checkout@v4
+
+      - name: Check out pinned desktop core
+        uses: actions/checkout@v4
+        with:
+          repository: yuanycr/yatori-go-desktop
+          ref: 821b6557a909064f864d4e7aae9b230d8d1472eb
+          path: desktop-core
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.11"
+          cache-dependency-path: desktop-core/go.sum
+
+      - name: Set up Android SDK and NDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools,platforms;android-35,build-tools;35.0.0,ndk;27.0.12077973"
+
+      - name: Build mobile core AAR
+        working-directory: desktop-core
+        shell: bash
+        run: |
+          set -euo pipefail
+          go test ./mobilecore -count=1
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.0.12077973"
+          gomobile init
+          mkdir -p ../app/libs
+          gomobile bind -target=android/arm64 -androidapi=24 -trimpath -ldflags="-s -w" -o ../app/libs/yatori-mobile.aar ./mobilecore
+          cp mobilecore/api-schema.json ../app/src/main/assets/core/api-schema.json
+          CORE_VERSION="0.4.0"
+          ANDROID_VERSION="0.4.1"
+          CORE_COMMIT="$(git rev-parse --short HEAD)"
+          AAR_FILE="yatori-mobile-v${CORE_VERSION}.aar"
+          AAR_PATH="../app/libs/yatori-mobile.aar"
+          AAR_SHA="$(sha256sum "$AAR_PATH" | cut -d ' ' -f 1)"
+          AAR_BYTES="$(stat -c '%s' "$AAR_PATH")"
+          SCHEMA_SHA="$(sha256sum ../app/src/main/assets/core/api-schema.json | cut -d ' ' -f 1)"
+          BUILT_AT="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          CORE_COMMIT="$CORE_COMMIT" CORE_VERSION="$CORE_VERSION" ANDROID_VERSION="$ANDROID_VERSION" AAR_FILE="$AAR_FILE" AAR_SHA="$AAR_SHA" AAR_BYTES="$AAR_BYTES" SCHEMA_SHA="$SCHEMA_SHA" BUILT_AT="$BUILT_AT" python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+
+          core_dir = Path("../app/src/main/assets/core")
+          aar_name = os.environ["AAR_FILE"]
+          version = {
+              "androidVersion": os.environ["ANDROID_VERSION"],
+              "desktopCoreVersion": os.environ["CORE_VERSION"],
+              "coreCommit": os.environ["CORE_COMMIT"],
+              "apiSchemaVersion": 1,
+              "aarFile": aar_name,
+              "aarSha256": os.environ["AAR_SHA"],
+              "aarBytes": int(os.environ["AAR_BYTES"]),
+              "target": "android/arm64",
+              "androidApi": 24,
+              "builtAt": os.environ["BUILT_AT"],
+          }
+          version_path = core_dir / "yatori-core-version.json"
+          version_text = json.dumps(version, ensure_ascii=False, indent=2) + "\n"
+          version_path.write_text(version_text, encoding="utf-8")
+          checksums = {
+              "generatedAt": os.environ["BUILT_AT"],
+              "desktopCoreVersion": os.environ["CORE_VERSION"],
+              "coreCommit": os.environ["CORE_COMMIT"],
+              "apiSchemaVersion": 1,
+              "files": {
+                  aar_name: os.environ["AAR_SHA"],
+                  "api-schema.json": os.environ["SCHEMA_SHA"],
+                  "yatori-core-version.json": hashlib.sha256(version_text.encode()).hexdigest(),
+              },
+          }
+          (core_dir / "yatori-mobilecore-checksums.json").write_text(
+              json.dumps(checksums, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Build APK
+        run: gradle --no-daemon clean assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Yatori-Android-v0.4.1-arm64-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
