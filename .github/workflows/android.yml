@@ -23,6 +23,13 @@ jobs:
           ref: 821b6557a909064f864d4e7aae9b230d8d1472eb
           path: desktop-core
 
+      - name: Check out console dependency
+        uses: actions/checkout@v4
+        with:
+          repository: yatori-dev/yatori-go-console
+          ref: c9fee556ecbb76fa412f66b0abc0686ffdd193d6
+          path: yatori-go-console
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
@@ -32,7 +39,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24.11"
+          go-version: "1.25.0"
           cache-dependency-path: desktop-core/go.sum
 
       - name: Set up Android SDK and NDK
